@@ -42,13 +42,22 @@ jobs:
       - name: Clone LineageOS kernel source (only when no cache)
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
-          git clone --depth=1 -b lineage-22.2 https://github.com/LineageOS/android_kernel_lge_msm8998.git kernel
+          # 自我保护：若 kernel 目录已存在（例如缓存恢复）则跳过 clone
+          if [ -f kernel/Makefile ] && [ -d kernel/.git ]; then
+            echo "==> kernel source already present, skipping clone"
+          else
+            rm -rf kernel
+            git clone --depth=1 -b lineage-22.2 https://github.com/LineageOS/android_kernel_lge_msm8998.git kernel
+          fi
 
       - name: Download and apply 4K patch (idempotent, safe with cache)
         run: |
           set -e
           cd kernel
+          # 优先用 yueddff，失败则回退 12yuedf（两个用户名都试，总有一个能下到）
           curl -fsSL -o /tmp/fix.patch \
+            "https://raw.githubusercontent.com/yueddff/android_kernel_lge_msm8998/lineage-22.2/0001-sde-hdmi-edid-drop-DCI-4K-force-UHD-3840x2160.patch" \
+            || curl -fsSL -o /tmp/fix.patch \
             "https://raw.githubusercontent.com/12yuedf/android_kernel_lge_msm8998/lineage-22.2/0001-sde-hdmi-edid-drop-DCI-4K-force-UHD-3840x2160.patch"
           if git apply --check /tmp/fix.patch 2>/dev/null; then
             git apply /tmp/fix.patch
