@@ -92,6 +92,12 @@ jobs:
           export CC=clang
           export REAL_CC=clang
 
+          # 关闭局部的 -Werror / -Werror=xxx（如 tfa9872 的 ccflags-y += -Werror，
+          # Clang 会把"误导性缩进"等警告升级为错误导致编译失败；幂等，缓存下重复执行无害）
+          sed -i 's/KBUILD_CFLAGS\t+= -Werror/KBUILD_CFLAGS += -Wno-error/' Makefile
+          find . -name Makefile -not -path './.git/*' -exec sed -i \
+            's/ccflags-y\s*+=\s*-Werror$/ccflags-y += -Wno-error/; s/ -Werror=/ -Wno-error=/g' {} +
+
           # 有缓存（out/.config 已存在）则跳过 defconfig，直接增量编译
           if [ ! -f out/.config ]; then
             echo "==> Using defconfig: lineageos_joan_defconfig"
