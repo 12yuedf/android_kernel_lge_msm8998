@@ -138,54 +138,53 @@ jobs:
 
           echo "==> Repacking (parse original header -> swap kernel -> rebuild)"
           python3 - /tmp/stock-boot.img out/final/Image.gz-dtb out/final/boot.img <<'PYEOF'
-import struct, sys
+          import struct, sys
 
-boot_src, kernel_src, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
-data = open(boot_src, 'rb').read()
-assert data[:8] == b'ANDROID!', 'ERROR: not an Android boot image'
+          boot_src, kernel_src, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
+          data = open(boot_src, 'rb').read()
+          assert data[:8] == b'ANDROID!', 'ERROR: not an Android boot image'
 
-def u32(o):
-    return struct.unpack_from('<I', data, o)[0]
+          def u32(o):
+              return struct.unpack_from('<I', data, o)[0]
 
-page_size = u32(36)
-header_version = u32(52)          # v0 镜像里该偏移是 cmdline 内容，不可能恰好是 1/2/3/4
-if header_version == 0:
-    header_size = 1616            # v0：无 header_size/header_version 字段，cmdline 从 48 开始
-    id_off = 560                  # cmdline(48..559) -> id(560..591) -> extra_cmdline(592..1615)
-else:
-    sys.exit('ERROR: header_version %d not supported (LG V30 boot.img is v0)' % header_version)
+          page_size = u32(36)
+          header_version = u32(52)          # v1+ 时该字段是 1/2/3/4；v0 里该偏移是 cmdline 内容（ASCII），不会是 1~4
+          if header_version in (1, 2, 3, 4):
+              sys.exit('ERROR: header_version %d not supported (LG V30 boot.img is v0)' % header_version)
+          header_size = 1616                # v0：无 header_size/header_version 字段，cmdline 从 48 开始
+          id_off = 560                      # cmdline(48..559) -> id(560..591) -> extra_cmdline(592..1615)
 
-kernel_size = u32(8)
-ramdisk_size = u32(16)
-second_size = u32(24)
+          kernel_size = u32(8)
+          ramdisk_size = u32(16)
+          second_size = u32(24)
 
-def pad(n):
-    return ((n + page_size - 1) // page_size) * page_size
+          def pad(n):
+              return ((n + page_size - 1) // page_size) * page_size
 
-pos = page_size                   # 第一页放 header
-kernel = data[pos:pos + kernel_size]; pos += pad(kernel_size)
-ramdisk = data[pos:pos + ramdisk_size]; pos += pad(ramdisk_size)
-second = data[pos:pos + second_size] if second_size else b''
-print('header_version=0 page_size=%d kernel=%d ramdisk=%d second=%d' %
-      (page_size, len(kernel), len(ramdisk), len(second)))
+          pos = page_size                   # 第一页放 header
+          kernel = data[pos:pos + kernel_size]; pos += pad(kernel_size)
+          ramdisk = data[pos:pos + ramdisk_size]; pos += pad(ramdisk_size)
+          second = data[pos:pos + second_size] if second_size else b''
+          print('header_version=0 page_size=%d kernel=%d ramdisk=%d second=%d' %
+                (page_size, len(kernel), len(ramdisk), len(second)))
 
-new_kernel = open(kernel_src, 'rb').read()
-out = bytearray(page_size)
-out[:header_size] = data[:header_size]            # 原样保留 header 全部字段（cmdline/os_version/地址等）
-struct.pack_into('<I', out, 8, len(new_kernel))   # 仅更新 kernel_size
-out[id_off:id_off + 32] = b'\x00' * 32            # 清空 id（bootloader 不校验）
+          new_kernel = open(kernel_src, 'rb').read()
+          out = bytearray(page_size)
+          out[:header_size] = data[:header_size]            # 原样保留 header 全部字段（cmdline/os_version/地址等）
+          struct.pack_into('<I', out, 8, len(new_kernel))   # 仅更新 kernel_size
+          out[id_off:id_off + 32] = b'\x00' * 32            # 清空 id（bootloader 不校验）
 
-out += new_kernel
-out += b'\x00' * (pad(len(new_kernel)) - len(new_kernel))
-out += ramdisk
-out += b'\x00' * (pad(len(ramdisk)) - len(ramdisk))
-if second:
-    out += second
-    out += b'\x00' * (pad(len(second)) - len(second))
+          out += new_kernel
+          out += b'\x00' * (pad(len(new_kernel)) - len(new_kernel))
+          out += ramdisk
+          out += b'\x00' * (pad(len(ramdisk)) - len(ramdisk))
+          if second:
+              out += second
+              out += b'\x00' * (pad(len(second)) - len(second))
 
-open(out_path, 'wb').write(bytes(out))
-print('WROTE %s (%d bytes)' % (out_path, len(out)))
-PYEOF
+          open(out_path, 'wb').write(bytes(out))
+          print('WROTE %s (%d bytes)' % (out_path, len(out)))
+          PYEOF
           ls -lh out/final/boot.img
 
       - name: Upload artifacts
