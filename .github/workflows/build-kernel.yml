@@ -1,9 +1,13 @@
 name: Build LG V30 (joan) kernel
 
-# 零本地操作版：不需要本地克隆/打补丁，全程 GitHub 网页操作
-# 前提：补丁文件已上传到本仓库 lineage-22.2 分支根目录
-#       0001-sde-hdmi-edid-drop-DCI-4K-force-UHD-3840x2160.patch
+# ============================================================
+# 零本地操作版：不需要在本地克隆/打补丁，全程 GitHub 网页操作
+# 使用前提：
+#   1. 你已经把补丁文件上传到本仓库 lineage-22.2 分支根目录
+#      （文件名为：0001-sde-hdmi-edid-drop-DCI-4K-force-UHD-3840x2160.patch）
+#   2. 仓库页 Actions -> 本工作流 -> Run workflow
 # 工作流会自动：checkout 官方内核源码 -> 下载你的补丁并应用 -> 交叉编译
+# ============================================================
 
 on:
   workflow_dispatch:
@@ -51,153 +55,7 @@ jobs:
         run: |
           set -e
           # 补丁文件必须已上传到你的仓库 lineage-22.2 分支根目录
-          # 把下面的 12yuedf 换成你的 GitHub 用户名（如已是你自己的仓库则无需改）
-          curl -fsSL -o /tmp/fix.patch \
-            "https://raw.githubusercontent.com/12yuedf/android_kernel_lge_msm8998/lineage-22.2/0001-sde-hdmi-edid-drop-DCI-4K-force-UHD-3840x2160.patch"
-          git apply /tmp/fix.patch
-          echo "==> Patch applied:"
-          git diff --stat
-
-      - name: Install cross toolchain and build deps
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq \
-            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
-            bc bison flex libssl-dev make python3 \
-            device-tree-compiler
-          echo "Toolchain: $(aarch64-linux-gnu-gcc --version | head -1)"
-
-      - name: Build kernel
-        id: build
-        run: |
-          set -e
-          export ARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          export KCFLAGS="-Wno-error"
-
-          # 源码兼容修复：同目录头文件尖括号包含（GCC 搜不到）
-          sed -i 's|#include <btfm_slim.h>|#include "btfm_slim.h"|' drivers/bluetooth/btfm_slim.c
-          sed -i 's|#include <btfm_slim_wcn3990.h>|#include "btfm_slim_wcn3990.h"|' drivers/bluetooth/btfm_slim.c
-
-          # 源码兼容修复：关闭内核默认 -Werror（GCC 11 新警告会阻断老内核构建）
-          sed -i 's/KBUILD_CFLAGS\t+= -Werror/KBUILD_CFLAGS += -Wno-error/' Makefile
-          find . -name Makefile -not -path './.git/*' -exec sed -i \
-            's/ccflags-y\s*+=\s*-Werror$/ccflags-y += -Wno-error/; s/ -Werror=/ -Wno-error=/g' {} +
-          sed -i 's/-Werror=implicit-int/-Wno-error=implicit-int/; s/-Werror=strict-prototypes/-Wno-error=strict-prototypes/; s/-Werror=date-time/-Wno-error=date-time/' Makefile
-
-          echo "==> Using defconfig: ${{ github.event.inputs.defconfig }}"
-          make ${{ github.event.inputs.defconfig }}
-          make -j"$(nproc)" Image.gz-dtb
-
-          echo "==> Build artifacts:"
-          ls -lh arch/arm64/boot/Image.gz-dtb
-          mkdir -p out
-          cp arch/arm64/boot/Image.gz-dtb out/Image.gz-dtb
-          echo "built=yes" >> "$GITHUB_OUTPUT"
-
-      - name: (Optional) Repack boot.img with your current ramdisk
-        if: steps.build.outputs.built == 'yes' && github.event.inputs.boot_img_url != ''
-        run: |
-          set -e
-          git clone --depth 1 https://android.googlesource.com/platform/system/tools/mkbootimg /tmp/mkbootimg
-
-          echo "==> Downloading current boot.img: ${{ github.event.inputs.boot_img_url }}"
-          curl -L -o /tmp/stock-boot.img "${{ github.event.inputs.boot_img_url }}"
-          ls -lh /tmp/stock-boot.img
-
-          echo "==> Unpacking stock boot.img"
-          python3 /tmp/mkbootimg/unpack_bootimg.py \
-            --boot_img /tmp/stock-boot.img \
-            --out /tmp/boot-unpacked
-          cat /tmp/boot-unpacked/boot_info.json
-
-          echo "==> Repacking with new kernel"
-          python3 /tmp/mkbootimg/mkbootimg.py \
-            --kernel out/Image.gz-dtb \
-            --ramdisk /tmp/boot-unpacked/ramdisk \
-            --base "$(python3 -c "import json;print(json.load(open('/tmp/boot-unpacked/boot_info.json'))['base'])")" \
-            --pagesize "$(python3 -c "import json;print(json.load(open('/tmp/boot-unpacked/boot_info.json'))['pagesize'])")" \
-            --kernel_offset "$(python3 -c "import json;print(json.load(open('/tmp/boot-unpacked/boot_info.json'))['kernel_offset'])")" \
-            --ramdisk_offset "$(python3 -c "import json;print(json.load(open('/tmp/boot-unpacked/boot_info.json'))['ramdisk_offset'])")" \
-            --second_offset "$(python3 -c "import json;print(json.load(open('/tmp/boot-unpacked/boot_info.json'))['second_offset'])")" \
-            --tags_offset "$(python3 -c "import json;print(json.load(open('/tmp/boot-unpacked/boot_info.json'))['tags_offset'])")" \
-            --header_version "$(python3 -c "import json;print(json.load(open('/tmp/boot-unpacked/boot_info.json'))['header_version'])")" \
-            --os_version "$(python3 -c "import json;print(json.load(open('/tmp/boot-unpacked/boot_info.json'))['os_version'])")" \
-            --os_patch_level "$(python3 -c "import json;print(json.load(open('/tmp/boot-unpacked/boot_info.json'))['os_patch_level'])")" \
-            --cmdline "$(python3 -c "import json;print(json.load(open('/tmp/boot-unpacked/boot_info.json'))['cmdline'])")" \
-            -o out/boot.img
-          ls -lh out/boot.img
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: joan-4k-kernel
-          path: |
-            out/Image.gz-dtb
-            out/boot.img
-          if-no-files-found: warn
-
-      - name: Build summary
-        run: |
-          echo "## 构建完成" >> "$GITHUB_STEP_SUMMARY"
-          echo "- 内核(含DTB): \`Image.gz-dtb\`" >> "$GITHUB_STEP_SUMMARY"
-          if ls out/boot.img 2>/dev/null; then
-            echo "- 可刷写镜像: \`boot.img\`" >> "$GITHUB_STEP_SUMMARY"
-            echo "  刷入: \`fastboot flash boot boot.img\`" >> "$GITHUB_STEP_SUMMARY"
-          finame: Build LG V30 (joan) kernel
-
-# 零本地操作版：不需要本地克隆/打补丁，全程 GitHub 网页操作
-# 前提：补丁文件已上传到本仓库 lineage-22.2 分支根目录
-#       0001-sde-hdmi-edid-drop-DCI-4K-force-UHD-3840x2160.patch
-# 工作流会自动：checkout 官方内核源码 -> 下载你的补丁并应用 -> 交叉编译
-
-on:
-  workflow_dispatch:
-    inputs:
-      defconfig:
-        description: '内核配置（对应你的机型变体）'
-        required: true
-        default: 'joan_global_com_defconfig'
-        type: choice
-        options:
-          - joan_global_com_defconfig      # H930 / H930DS / US998（国际版/美版解锁版，官方支持）
-          - joan_att_us_defconfig          # AT&T (H931)
-          - joan_spr_us_defconfig          # Sprint (H932)
-          - joan_tmo_us_defconfig          # T-Mobile (H932PR)
-          - joan_vzw_defconfig             # Verizon (VS996)
-          - joan_usc_us_defconfig          # US Cellular (US997)
-          - joan_acg_us_defconfig
-          - joan_clr_pr_defconfig
-          - joan_global_ca_defconfig
-          - joan_global_ldu_defconfig
-          - joan_nao_us_defconfig
-          - joan_dcm_jp_defconfig          # NTT docomo (LGV36)
-          - joan_kddi_jp_defconfig         # au (LGV35)
-          - joan_kt_kr_defconfig           # KT (V30+ 韩版)
-          - joan_lgu_kr_defconfig          # LG U+ (韩版)
-          - joan_skt_kr_defconfig          # SK Telecom (韩版)
-      boot_img_url:
-        description: '（可选）你当前 LineageOS boot.img 的直链 URL。留空则只输出内核（Image.gz-dtb）。'
-        required: false
-        default: ''
-
-jobs:
-  build:
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout official LineageOS kernel source
-        uses: actions/checkout@v4
-        with:
-          repository: LineageOS/android_kernel_lge_msm8998
-          ref: lineage-22.2
-
-      - name: Download and apply 4K patch (from this repo)
-        run: |
-          set -e
-          # 补丁文件必须已上传到你的仓库 lineage-22.2 分支根目录
-          # 把下面的 12yuedf 换成你的 GitHub 用户名（如已是你自己的仓库则无需改）
+          # 把下面的 12yuedf 换成你的 GitHub 用户名
           curl -fsSL -o /tmp/fix.patch \
             "https://raw.githubusercontent.com/12yuedf/android_kernel_lge_msm8998/lineage-22.2/0001-sde-hdmi-edid-drop-DCI-4K-force-UHD-3840x2160.patch"
           git apply /tmp/fix.patch
