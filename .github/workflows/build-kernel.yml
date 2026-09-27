@@ -1,18 +1,22 @@
 name: Build LG V30 (joan) kernel - 4K fix
 
 # ============================================================
-# v3：Clang 构建 + 正确的 4K 修复（fbdev MDSS 路径）
+# v3.4：Clang 构建 + 正确的 4K 修复（fbdev MDSS 路径）+ 自包含 boot.img 重打包
 # 说明：
-#   - 构建方式沿用已验证可用的方案（Clang + lineageos_joan_defconfig + O=out），
-#     不再需要任何 GCC 兼容性修复
+#   - 构建方式沿用已验证可用的方案（Clang + lineageos_joan_defconfig + O=out）
 #   - 4K 修复打在真实生效的路径上：drivers/video/fbdev/msm/mdss_hdmi_edid.c
 #     （joan 的 HDMI/DP 输出走 fbdev MDSS 栈，lineageos_joan_defconfig 无 DRM_MSM）
 #   - 内核源码 + 编译产物会缓存，第二次起跳过 clone/patch/defconfig，
 #     只增量编译改动过的文件（约 5~10 分钟）
+#   - v3.4 修复：AOSP 新版 unpack_bootimg.py 不再输出 boot_info.json 导致打包失败。
+#     现在改为内嵌 Python 直接解析原 boot.img 头部 -> 换内核 -> 重打包，
+#     header 里所有字段（cmdline / os_version / 各地址 / page_size）原样保留，
+#     不依赖任何外部工具，也不需要从 googlesource 下载 mkbootimg。
 # 使用前提：
 #   - 补丁文件已上传到本仓库 lineage-22.2 分支根目录：
 #     0001-sde-hdmi-edid-drop-DCI-4K-force-UHD-3840x2160.patch
-#   - 仓库页 Actions -> 本工作流 -> Run workflow（无需填参数）
+#   - boot.img 已上传到本仓库 lineage-22.2 分支根目录（重打包用）
+#   - 仓库页 Actions -> 本工作流 -> Run workflow（boot_img_url 留空）
 # ============================================================
 
 on:
@@ -114,13 +118,11 @@ jobs:
           cp out/arch/arm64/boot/Image.gz-dtb out/final/Image.gz-dtb
           echo "built=yes" >> "$GITHUB_OUTPUT"
 
-      - name: (Optional) Repack boot.img with your current ramdisk
+      - name: Repack boot.img with new kernel (self-contained, no mkbootimg needed)
         if: steps.build.outputs.built == 'yes'
         run: |
           set -e
           cd kernel
-          git clone --depth 1 https://android.googlesource.com/platform/system/tools/mkbootimg /tmp/mkbootimg
-
           # 优先用仓库根目录的 boot.img（上传到本仓库默认分支即可），否则用输入的备用 URL
           if [ -f ../boot.img ]; then
             echo "==> Using boot.img from this repo"
@@ -134,27 +136,56 @@ jobs:
           fi
           ls -lh /tmp/stock-boot.img
 
-          echo "==> Unpacking stock boot.img"
-          python3 /tmp/mkbootimg/unpack_bootimg.py \
-            --boot_img /tmp/stock-boot.img \
-            --out /tmp/boot-unpacked
-          cat /tmp/boot-unpacked/boot_info.json
+          echo "==> Repacking (parse original header -> swap kernel -> rebuild)"
+          python3 - /tmp/stock-boot.img out/final/Image.gz-dtb out/final/boot.img <<'PYEOF'
+import struct, sys
 
-          echo "==> Repacking with new kernel"
-          python3 /tmp/mkbootimg/mkbootimg.py \
-            --kernel out/final/Image.gz-dtb \
-            --ramdisk /tmp/boot-unpacked/ramdisk \
-            --base "$(python3 -c "import json;print(json.load(open('/tmp/boot-unpacked/boot_info.json'))['base'])")" \
-            --pagesize "$(python3 -c "import json;print(json.load(open('/tmp/boot-unpacked/boot_info.json'))['pagesize'])")" \
-            --kernel_offset "$(python3 -c "import json;print(json.load(open('/tmp/boot-unpacked/boot_info.json'))['kernel_offset'])")" \
-            --ramdisk_offset "$(python3 -c "import json;print(json.load(open('/tmp/boot-unpacked/boot_info.json'))['ramdisk_offset'])")" \
-            --second_offset "$(python3 -c "import json;print(json.load(open('/tmp/boot-unpacked/boot_info.json'))['second_offset'])")" \
-            --tags_offset "$(python3 -c "import json;print(json.load(open('/tmp/boot-unpacked/boot_info.json'))['tags_offset'])")" \
-            --header_version "$(python3 -c "import json;print(json.load(open('/tmp/boot-unpacked/boot_info.json'))['header_version'])")" \
-            --os_version "$(python3 -c "import json;print(json.load(open('/tmp/boot-unpacked/boot_info.json'))['os_version'])")" \
-            --os_patch_level "$(python3 -c "import json;print(json.load(open('/tmp/boot-unpacked/boot_info.json'))['os_patch_level'])")" \
-            --cmdline "$(python3 -c "import json;print(json.load(open('/tmp/boot-unpacked/boot_info.json'))['cmdline'])")" \
-            -o out/final/boot.img
+boot_src, kernel_src, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
+data = open(boot_src, 'rb').read()
+assert data[:8] == b'ANDROID!', 'ERROR: not an Android boot image'
+
+def u32(o):
+    return struct.unpack_from('<I', data, o)[0]
+
+page_size = u32(36)
+header_version = u32(52)          # v0 镜像里该偏移是 cmdline 内容，不可能恰好是 1/2/3/4
+if header_version == 0:
+    header_size = 1616            # v0：无 header_size/header_version 字段，cmdline 从 48 开始
+    id_off = 560                  # cmdline(48..559) -> id(560..591) -> extra_cmdline(592..1615)
+else:
+    sys.exit('ERROR: header_version %d not supported (LG V30 boot.img is v0)' % header_version)
+
+kernel_size = u32(8)
+ramdisk_size = u32(16)
+second_size = u32(24)
+
+def pad(n):
+    return ((n + page_size - 1) // page_size) * page_size
+
+pos = page_size                   # 第一页放 header
+kernel = data[pos:pos + kernel_size]; pos += pad(kernel_size)
+ramdisk = data[pos:pos + ramdisk_size]; pos += pad(ramdisk_size)
+second = data[pos:pos + second_size] if second_size else b''
+print('header_version=0 page_size=%d kernel=%d ramdisk=%d second=%d' %
+      (page_size, len(kernel), len(ramdisk), len(second)))
+
+new_kernel = open(kernel_src, 'rb').read()
+out = bytearray(page_size)
+out[:header_size] = data[:header_size]            # 原样保留 header 全部字段（cmdline/os_version/地址等）
+struct.pack_into('<I', out, 8, len(new_kernel))   # 仅更新 kernel_size
+out[id_off:id_off + 32] = b'\x00' * 32            # 清空 id（bootloader 不校验）
+
+out += new_kernel
+out += b'\x00' * (pad(len(new_kernel)) - len(new_kernel))
+out += ramdisk
+out += b'\x00' * (pad(len(ramdisk)) - len(ramdisk))
+if second:
+    out += second
+    out += b'\x00' * (pad(len(second)) - len(second))
+
+open(out_path, 'wb').write(bytes(out))
+print('WROTE %s (%d bytes)' % (out_path, len(out)))
+PYEOF
           ls -lh out/final/boot.img
 
       - name: Upload artifacts
