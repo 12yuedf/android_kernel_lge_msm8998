@@ -19,7 +19,7 @@ on:
   workflow_dispatch:
     inputs:
       boot_img_url:
-        description: '（可选）你当前 LineageOS boot.img 的直链 URL。留空则只输出内核（Image.gz-dtb）。'
+        description: '（备用）外部 boot.img 直链。仓库根目录已有 boot.img 时优先用仓库文件，无需填此项。'
         required: false
         default: ''
 
@@ -115,14 +115,23 @@ jobs:
           echo "built=yes" >> "$GITHUB_OUTPUT"
 
       - name: (Optional) Repack boot.img with your current ramdisk
-        if: steps.build.outputs.built == 'yes' && github.event.inputs.boot_img_url != ''
+        if: steps.build.outputs.built == 'yes'
         run: |
           set -e
           cd kernel
           git clone --depth 1 https://android.googlesource.com/platform/system/tools/mkbootimg /tmp/mkbootimg
 
-          echo "==> Downloading current boot.img: ${{ github.event.inputs.boot_img_url }}"
-          curl -L -o /tmp/stock-boot.img "${{ github.event.inputs.boot_img_url }}"
+          # 优先用仓库根目录的 boot.img（上传到本仓库默认分支即可），否则用输入的备用 URL
+          if [ -f ../boot.img ]; then
+            echo "==> Using boot.img from this repo"
+            cp ../boot.img /tmp/stock-boot.img
+          elif [ -n "${{ github.event.inputs.boot_img_url }}" ]; then
+            echo "==> Downloading boot.img: ${{ github.event.inputs.boot_img_url }}"
+            curl -L -o /tmp/stock-boot.img "${{ github.event.inputs.boot_img_url }}"
+          else
+            echo "==> No boot.img found, skipping repack (kernel only)"
+            exit 0
+          fi
           ls -lh /tmp/stock-boot.img
 
           echo "==> Unpacking stock boot.img"
