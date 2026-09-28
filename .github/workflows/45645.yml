@@ -50,26 +50,31 @@ jobs:
               print('tspdrv.h not in 17.1, skip')
           PY
 
-      - name: Fix nested function in msm_vidc_common.c (clang incompatible)
+      - name: Fix nested functions in vidc driver (clang incompatible)
         run: |
           cd kernel
           python3 <<'PY'
-          import re
-          p = 'drivers/media/platform/msm/vidc/msm_vidc_common.c'
-          s = open(p).read()
-          # Match put_inst with nested put_inst_helper, ignore indentation
-          m = re.search(
-              r'(static void put_inst\(struct msm_vidc_inst \*inst\)\s*\{)\s*'
-              r'(void put_inst_helper\(struct kref \*kref\)\s*\{[^}]*\})\s*'
-              r'(if \(!inst\)[^}]*kref_put\(&inst->kref, put_inst_helper\);\s*\})',
-              s)
-          if m:
-              new = m.group(2) + '\n' + m.group(1) + '\n' + m.group(3)
-              s = s[:m.start()] + new + s[m.end():]
-              open(p, 'w').write(s)
-              print('msm_vidc_common.c: nested function fixed')
-          else:
-              print('msm_vidc_common.c: pattern not found, may already be fixed')
+          import re, glob
+          # Find all "static void func() { void helper() { ... } body }"
+          # patterns and move helper outside func
+          for path in glob.glob('drivers/media/platform/msm/vidc/*.c'):
+              s = open(path).read()
+              orig = s
+              # Match: static void NAME(args) { void HELPER(args) { body } rest }
+              # where HELPER body is { ... } (no nested braces)
+              pattern = re.compile(
+                  r'(static void (\w+)\([^)]*\)\s*\{)\s*'
+                  r'(void (\w+)\([^)]*\)\s*\{[^{}]*\})\s*'
+                  r'((?:(?!static void).)*?\})',
+                  re.MULTILINE)
+              def fix(m):
+                  return m.group(3) + '\n' + m.group(1) + '\n' + m.group(5)
+              s = pattern.sub(fix, s)
+              if s != orig:
+                  open(path, 'w').write(s)
+                  print(f'{path}: nested functions fixed')
+              else:
+                  print(f'{path}: no nested pattern found')
           PY
 
       - name: Install dependencies and Clang toolchain
@@ -93,7 +98,7 @@ jobs:
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             REAL_CC=clang -j$(nproc) Image.gz-dtb \
-            KCFLAGS="-Wno-error -Wno-error=unused-but-set-variable -Wno-error=enum-conversion -Wno-error=misleading-indentation -Wno-error=self-assign" CONFIG_WERROR=n \
+            KCFLAGS="-Wno-error -Wno-error=unused-but-set-variable -Wno-error=enum-conversion -Wno-error=misleading-indentation -Wno-error=self-assign -Wno-error=fortify-source" CONFIG_WERROR=n \
             HOSTCFLAGS="-fcommon" > build.log 2>&1 || true
           echo "=== build finished, checking for errors ==="
           grep -nE "error:|Error [0-9]|undefined reference|No such file" build.log | grep -v "objdump" | head -30
