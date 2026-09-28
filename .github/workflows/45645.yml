@@ -225,7 +225,7 @@ jobs:
           make O=out ARCH=arm64 CC=aarch64-linux-gnu-gcc \
             CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             -j$(nproc) Image.gz-dtb \
-            KCFLAGS="-Wno-error -Wno-error=unused-but-set-variable -Wno-error=enum-conversion -Wno-error=misleading-indentation -Wno-error=self-assign -Wno-error=fortify-source -fcommon -fno-pie" CONFIG_WERROR=n \
+            KCFLAGS="-Wno-error -Wno-error=unused-but-set-variable -Wno-error=enum-conversion -Wno-error=misleading-indentation -Wno-error=implicit-fallthrough -fcommon -fno-pie" CONFIG_WERROR=n \
             HOSTCFLAGS="-fcommon" > build.log 2>&1 || true
           echo "=== build exit ==="
           grep -nE "error:|Error [0-9]|undefined reference|No such file" build.log | grep -v "objdump" | head -30
