@@ -287,8 +287,9 @@ jobs:
           python3 <<'PY'
           import struct, zlib, re
           d = open('new-boot.img','rb').read()
-          ps = struct.unpack_from('<I', d, 20)[0]
-          ks = struct.unpack_from('<I', d, 8)[0]
+          # boot 头 8 个字段: kernel_size, kernel_addr, ramdisk_size, ramdisk_addr,
+          # second_size, second_addr, tags_addr, page_size(offset 36)
+          ks, ka, rs, ra, ss, sa, ta, ps = struct.unpack_from('<8I', d, 8)
           img = zlib.decompress(d[ps:ps+ks], 16 + zlib.MAX_WBITS)
           m = re.search(rb'gcc version [^\x00]+', img)
           ver = m.group(0).decode(errors='replace') if m else 'NOT FOUND'
