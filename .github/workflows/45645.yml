@@ -107,13 +107,20 @@ jobs:
 
       - name: Build kernel
         run: |
-          set -o pipefail
           cd kernel
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             REAL_CC=clang -j$(nproc) Image.gz-dtb \
             KCFLAGS="-Wno-error -Wno-error=unused-but-set-variable -Wno-error=enum-conversion" CONFIG_WERROR=n \
-            HOSTCFLAGS="-fcommon" 2>&1 | grep --line-buffered -v "aarch64-linux-gnu-objdump: Warning"
+            HOSTCFLAGS="-fcommon" > build.log 2>&1 || true
+          echo "=== build finished, checking for errors ==="
+          grep -nE "error:|Error [0-9]|undefined reference|No such file" build.log | grep -v "objdump" | head -30
+          echo "=== last 20 lines ==="
+          tail -20 build.log
+          if [ ! -f out/arch/arm64/boot/Image.gz-dtb ]; then
+            echo "=== KERNEL NOT BUILT ==="
+            exit 1
+          fi
 
       - name: Download boot17.img (LineageOS 17.1 boot image from your repo)
         run: |
