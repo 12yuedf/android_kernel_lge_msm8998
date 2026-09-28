@@ -144,6 +144,66 @@ jobs:
               print('no nested functions found (already clean)')
           PY
 
+      - name: Add stpcpy/bcmp compat to lib/string.c (new clang lowers strcpy/memcmp to them)
+        run: |
+          cd kernel
+          python3 <<'PY'
+          content = open('lib/string.c').read()
+          changed = False
+
+          if 'stpcpy' not in content:
+              stpcpy_block = '''
+          /**
+           * stpcpy - copy a string from src to dest returning a pointer to the new end
+           *          of dest, including src's %NUL-terminator. May overrun dest.
+           * @dest: pointer to end of string being copied into. Must be large enough
+           *        to receive copy.
+           * @src: pointer to the beginning of string being copied from. Must not overlap
+           *       dest.
+           *
+           * stpcpy differs from strcpy in a key way: the return value is a pointer
+           * to the new %NUL-terminating character in @dest. (For strcpy, the return
+           * value is a pointer to the start of @dest). This interface is considered
+           * unsafe as it doesn't perform bounds checking of the inputs. As such it's
+           * not recommended for usage. Instead, its definition is provided in case
+           * the compiler lowers other libcalls to stpcpy.
+           */
+          char *stpcpy(char *__restrict__ dest, const char *__restrict__ src);
+          char *stpcpy(char *__restrict__ dest, const char *__restrict__ src)
+          {
+          	while ((*dest++ = *src++) != '\\0')
+          		/* nothing */;
+          	return --dest;
+          }
+          EXPORT_SYMBOL(stpcpy);
+          '''
+              content = content.rstrip('\n') + '\n' + stpcpy_block
+              changed = True
+
+          if 'bcmp' not in content:
+              bcmp_block = '''
+          /**
+           * bcmp - Compare two areas of memory (compat for compiler-lowered libcalls)
+           * @cs: One area of memory
+           * @ct: Another area of memory
+           * @count: The size of the area.
+           */
+          int bcmp(const void *cs, const void *ct, size_t count)
+          {
+          	return memcmp(cs, ct, count);
+          }
+          EXPORT_SYMBOL(bcmp);
+          '''
+              content = content.rstrip('\n') + '\n' + bcmp_block
+              changed = True
+
+          if changed:
+              open('lib/string.c', 'w').write(content)
+              print('patched lib/string.c: stpcpy=%(s)s bcmp=%(b)s' % {'s': 'stpcpy' in content, 'b': 'bcmp' in content})
+          else:
+              print('lib/string.c already has stpcpy/bcmp')
+          PY
+
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -165,7 +225,7 @@ jobs:
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             REAL_CC=clang -j$(nproc) Image.gz-dtb \
-            KCFLAGS="-Wno-error -Wno-error=unused-but-set-variable -Wno-error=enum-conversion -Wno-error=misleading-indentation -Wno-error=self-assign -Wno-error=fortify-source" CONFIG_WERROR=n \
+            KCFLAGS="-Wno-error -Wno-error=unused-but-set-variable -Wno-error=enum-conversion -Wno-error=misleading-indentation -Wno-error=self-assign -Wno-error=fortify-source -fno-builtin" CONFIG_WERROR=n \
             HOSTCFLAGS="-fcommon" > build.log 2>&1 || true
           echo "=== build exit ==="
           grep -nE "error:|Error [0-9]|undefined reference|No such file" build.log | grep -v "objdump" | head -30
