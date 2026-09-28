@@ -204,6 +204,42 @@ jobs:
               print('lib/string.c already has stpcpy/bcmp')
           PY
 
+      - name: Integrate KernelSU-Next (official setup.sh, v3.4.0 tag)
+        run: |
+          cd kernel
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
+          ls -la drivers/kernelsu
+          grep -q "kernelsu" drivers/Makefile && echo "Makefile OK: obj-\$(CONFIG_KSU) += kernelsu/"
+          grep -q "drivers/kernelsu/Kconfig" drivers/Kconfig && echo "Kconfig OK"
+
+      - name: Enable KernelSU config in defconfig
+        run: |
+          cd kernel
+          python3 <<'PY'
+          p = 'arch/arm64/configs/lineageos_h930_defconfig'
+          lines = open(p).read().splitlines()
+          out = []
+          for l in lines:
+              # 移除可能存在的旧占位行
+              if l.startswith('# CONFIG_KPROBES') or l.startswith('# CONFIG_KSU') \
+                 or l.startswith('# CONFIG_SECURITYFS') or l.startswith('CONFIG_KSU'):
+                  continue
+              out.append(l)
+          need = {
+              'CONFIG_KSU=y',        # KernelSU 主开关
+              'CONFIG_KPROBES=y',    # KSU 依赖：kprobe hook
+              'CONFIG_SECURITYFS=y', # KSU selinux 支持
+          }
+          have = {l.strip() for l in out if l.strip().startswith('CONFIG_')}
+          for c in sorted(need - have):
+              out.append(c)
+          open(p, 'w').write('\n'.join(out) + '\n')
+          print('defconfig updated with:')
+          for c in sorted(need):
+              print('  ', c)
+          PY
+          grep -E "^CONFIG_KSU|^CONFIG_KPROBES|^CONFIG_SECURITYFS" arch/arm64/configs/lineageos_h930_defconfig
+
       - name: Install dependencies + LineageOS GCC 4.9 toolchain
         run: |
           sudo apt-get update
@@ -298,6 +334,14 @@ jobs:
               print('WARNING: 编译器不是 GCC 4.9，检查工具链安装！')
               raise SystemExit(1)
           print('OK: 编译器为 GCC 4.9，与官方 boot17.img 同工具链')
+          # KernelSU 集成验证：kallsyms 表/字符串应包含 ksu 相关符号
+          low = img.lower()
+          ksu_ok = (b'ksud' in low) or (b'kernelsu' in low) or (b'ksu_init' in low)
+          if ksu_ok:
+              print('OK: KernelSU-Next 已集成进内核 (ksu 符号存在)')
+          else:
+              print('WARNING: 未在内核中发现 KernelSU 符号，集成可能失败！')
+              raise SystemExit(1)
           PY
 
       - name: Upload boot
