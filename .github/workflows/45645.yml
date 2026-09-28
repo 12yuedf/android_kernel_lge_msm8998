@@ -204,10 +204,11 @@ jobs:
               print('lib/string.c already has stpcpy/bcmp')
           PY
 
-      - name: Integrate KernelSU-Next (official setup.sh, v3.4.0 tag)
+      - name: Integrate KernelSU-Next legacy (non-GKI, v3.4.0-legacy)
         run: |
           cd kernel
-          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
+          # legacy 分支专门适配 4.4 等老内核（non-GKI）：无 syscall_fn_t 依赖，直接 patch sys_call_table
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s v3.4.0-legacy
           ls -la drivers/kernelsu
           grep -q "kernelsu" drivers/Makefile && echo "Makefile OK: obj-\$(CONFIG_KSU) += kernelsu/"
           grep -q "drivers/kernelsu/Kconfig" drivers/Kconfig && echo "Kconfig OK"
