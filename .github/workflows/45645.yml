@@ -67,10 +67,12 @@ jobs:
 
       - name: Build kernel
         run: |
+          set +e
           cd kernel
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            REAL_CC=clang -j$(nproc) Image.gz-dtb KCFLAGS="-Wno-error" CONFIG_WERROR=n \
+            REAL_CC=clang -j$(nproc) Image.gz-dtb \
+            KCFLAGS="-Wno-error -Wno-error=unused-but-set-variable" CONFIG_WERROR=n \
             HOSTCFLAGS="-fcommon" > build.log 2>&1
           rc=$?
           echo "=== build exit code: $rc ==="
