@@ -1,16 +1,18 @@
-# LineageOS 17.1 内核构建 — 对照实验（无 VIDC 嵌套函数修复）
-# 目的：定位插坞+WiFi 开机卡死根因（变量 B）
-#   当前已知：官方内核正常；clang+GCC4.9 带 4K 补丁均卡死；GCC 4.9 与官方同工具链
-#   关键事实：GCC 4.9 天生支持 GNU 嵌套函数（clang 才不兼容）→
-#     当前 workflow 里的 "VIDC 嵌套函数提取" 修复对 GCC 4.9 是多余改动，
-#     若提取脚本逻辑有偏差，反而可能引入问题。
-#   本实验：同配置、保留 4K 补丁，仅移除 VIDC 修复步骤（源码保持原样）
-# 与 build-kernel-17.1-no4k.yml（变量 A：移除 4K 补丁）并行跑，一次定位：
-#   - no4k 正常而 novidc 卡死 → 4K 补丁是根因
-#   - no4k 卡死而 novidc 正常 → VIDC 修复是根因
-#   - 都正常/都卡死 → 继续缩小范围
-# 用法：上传 .github/workflows/ → Run workflow → 下载 boot17-novidc
-name: Build Kernel 17.1 No-VIDC-Fix Control
+# LineageOS 17.1 内核构建 — 变体矩阵（一次 Run 产出 4 个对照内核）
+# 目的：用单变量对照一次性定位"插坞+WiFi 开机卡死"根因
+#   4 个变体（GitHub Actions matrix 并行编译，约 20-30 分钟全部完成）：
+#     baseline : 4K补丁 ✓ VIDC修复 ✓ stpcpy/bcmp ✓  = 你当前在用的配置（已知卡死，作基线）
+#     no4k     : 4K补丁 ✗ VIDC修复 ✓ stpcpy/bcmp ✓  = 验证 4K 补丁
+#     novidc   : 4K补丁 ✓ VIDC修复 ✗ stpcpy/bcmp ✓  = 验证 VIDC 嵌套函数修复
+#     clean    : 4K补丁 ✗ VIDC修复 ✗ stpcpy/bcmp ✗  = 最接近官方源码行为
+#   判定：
+#     no4k 正常而 novidc 卡死 → 4K 补丁是根因
+#     novidc 正常而 no4k 卡死 → VIDC 修复是根因
+#     no4k+novidc 都正常       → 两个改动都参与
+#     clean 仍卡死             → 问题在配置/编译层面，继续深挖
+# 用法：整个文件上传到 .github/workflows/（文件名随意）→ Actions → Run workflow → 下载 4 个 boot
+# 注意：tspdrv.h 修复在所有变体都保留（仅 include 兼容，非行为改动，避免编译失败）
+name: Build Kernel 17.1 Variant Matrix
 
 on:
   workflow_dispatch:
@@ -18,14 +20,19 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [baseline, no4k, novidc, clean]
     steps:
-      - name: Checkout kernel (lineage-17.1)
+      - name: Checkout kernel (lineage-17.1) [${{ matrix.variant }}]
         uses: actions/checkout@v4
         with:
           repository: SGCMarkus/android_kernel_lge_msm8998
           ref: lineage-17.1
           path: kernel
-      - name: Download 4K EDID patch and apply
+      - name: Apply 4K EDID patch (skip no4k/clean) [${{ matrix.variant }}]
+        if: matrix.variant != 'no4k' && matrix.variant != 'clean'
         run: |
           cd kernel
           curl -fL -o 0001-sde-hdmi-edid-4k-fix-lineage-17.1.patch \
@@ -33,7 +40,7 @@ jobs:
             || { echo "patch not found"; exit 1; }
           git apply --verbose 0001-sde-hdmi-edid-4k-fix-lineage-17.1.patch
           echo "4K patch applied OK"
-      - name: Fix tspdrv.h
+      - name: Fix tspdrv.h [${{ matrix.variant }}]
         run: |
           cd kernel
           python3 -c "
@@ -49,7 +56,105 @@ jobs:
               else: print('tspdrv ok')
           else: print('no tspdrv')
           "
-      - name: Add stpcpy/bcmp compat to lib/string.c
+      - name: Fix nested functions in VIDC (skip novidc/clean) [${{ matrix.variant }}]
+        if: matrix.variant != 'novidc' && matrix.variant != 'clean'
+        run: |
+          cd kernel
+          python3 <<'PY'
+          import re, glob
+          FUNC_HEAD = re.compile(
+              r'^[ \t]*(?:static[ \t]+)?(?:inline[ \t]+)?(?:const[ \t]+)?'
+              r'[A-Za-z_][A-Za-z0-9_ \t\*]*?[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*\(')
+          CONTROL = {'if', 'for', 'while', 'switch', 'return', 'sizeof', 'typeof'}
+          def find_function_heads(text):
+              lines = text.split('\n')
+              heads = []
+              for i, line in enumerate(lines):
+                  if '#' in line:
+                      continue
+                  if re.match(r'^[ \t]*(struct|enum|union) ', line):
+                      continue
+                  m = FUNC_HEAD.match(line)
+                  if not m:
+                      continue
+                  name = m.group(1)
+                  if name in CONTROL:
+                      continue
+                  stripped = line.rstrip()
+                  if stripped.endswith(';'):
+                      continue
+                  if '{' in stripped:
+                      is_head = True
+                  else:
+                      j = i + 1
+                      while j < len(lines) and lines[j].strip() == '':
+                          j += 1
+                      is_head = j < len(lines) and lines[j].strip().startswith('{')
+                  if is_head:
+                      offset = sum(len(l) + 1 for l in lines[:i])
+                      heads.append((offset, name))
+              return heads
+          def match_braces(text, brace_offset):
+              depth = 0
+              pos = brace_offset
+              while pos < len(text):
+                  c = text[pos]
+                  if c == '{':
+                      depth += 1
+                  elif c == '}':
+                      depth -= 1
+                      if depth == 0:
+                          return pos + 1
+                  pos += 1
+              return len(text)
+          def fix_file(text):
+              extracted = []
+              while True:
+                  heads = find_function_heads(text)
+                  ranges = []
+                  for offset, name in heads:
+                      brace = text.index('{', offset)
+                      end = match_braces(text, brace)
+                      ranges.append((offset, brace, end, name))
+                  found = None
+                  for a in ranges:
+                      for b in ranges:
+                          if a is not b and b[0] < a[0] and a[2] < b[2] and b[1] < a[1]:
+                              found = (b, a)
+                              break
+                      if found:
+                          break
+                  if not found:
+                      break
+                  outer, inner = found
+                  helper_block = text[inner[0]:inner[2]]
+                  helper_lines = helper_block.split('\n')
+                  dedented = [l[1:] if l.startswith('\t') else l for l in helper_lines]
+                  helper_text = '\n'.join(dedented).strip('\n') + '\n'
+                  rem_start = inner[0]
+                  while rem_start > outer[0] and text[rem_start - 1] == '\t':
+                      rem_start -= 1
+                  rem_end = inner[2]
+                  while rem_end < outer[2] and text[rem_end] in ' \t\n':
+                      rem_end += 1
+                  outer_head_and_prefix = text[outer[0]:rem_start]
+                  outer_tail = text[rem_end:outer[2]]
+                  text = text[:outer[0]] + helper_text + '\n' + outer_head_and_prefix + outer_tail + text[outer[2]:]
+                  extracted.append(inner[3])
+              return text, extracted
+          any_fix = False
+          for path in sorted(glob.glob('drivers/media/platform/msm/vidc/*.c')):
+              s = open(path).read()
+              new_s, extracted = fix_file(s)
+              if extracted:
+                  open(path, 'w').write(new_s)
+                  any_fix = True
+                  print(f'{path}: extracted {extracted}')
+          if not any_fix:
+              print('no nested functions found (already clean)')
+          PY
+      - name: Add stpcpy/bcmp compat (skip clean) [${{ matrix.variant }}]
+        if: matrix.variant != 'clean'
         run: |
           cd kernel
           python3 <<'PY'
@@ -64,13 +169,6 @@ jobs:
            *        to receive copy.
            * @src: pointer to the beginning of string being copied from. Must not overlap
            *       dest.
-           *
-           * stpcpy differs from strcpy in a key way: the return value is a pointer
-           * to the new %NUL-terminating character in @dest. (For strcpy, the return
-           * value is a pointer to the start of @dest). This interface is considered
-           * unsafe as it doesn't perform bounds checking of the inputs. As such it's
-           * not recommended for usage. Instead, its definition is provided in case
-           * the compiler lowers other libcalls to stpcpy.
            */
           char *stpcpy(char *__restrict__ dest, const char *__restrict__ src);
           char *stpcpy(char *__restrict__ dest, const char *__restrict__ src)
@@ -105,30 +203,33 @@ jobs:
           else:
               print('lib/string.c already has stpcpy/bcmp')
           PY
-      - name: Install dependencies + LineageOS GCC 4.9 toolchain
+      - name: Install deps + GCC 4.9 toolchain [${{ matrix.variant }}]
         run: |
           sudo apt-get update
           sudo apt-get install -y bc bison flex build-essential libssl-dev libncurses5-dev zip \
             gcc-arm-linux-gnueabi g++-arm-linux-gnueabi
-          mkdir -p /opt/toolchain
-          echo "Downloading LineageOS GCC 4.9 prebuilt (~267MB)..."
-          curl -fL --retry 3 -o /opt/toolchain/gcc49.tar.gz \
-            "https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9/archive/refs/heads/lineage-19.1.tar.gz"
-          tar -xzf /opt/toolchain/gcc49.tar.gz -C /opt/toolchain
-          mv /opt/toolchain/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9-lineage-19.1 /opt/toolchain/gcc49
-          ls /opt/toolchain/gcc49/bin/ | grep -E "gcc$|ld$|as$|objcopy$|strip$"
-          /opt/toolchain/gcc49/bin/aarch64-linux-android-gcc --version | head -2
-      - name: Configure kernel
+          mkdir -p $HOME/toolchain
+          if [ ! -d $HOME/toolchain/gcc49 ]; then
+            echo "Downloading LineageOS GCC 4.9 prebuilt (~267MB)..."
+            curl -fL --retry 3 -o $HOME/toolchain/gcc49.tar.gz \
+              "https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9/archive/refs/heads/lineage-19.1.tar.gz"
+            tar -xzf $HOME/toolchain/gcc49.tar.gz -C $HOME/toolchain
+            mv $HOME/toolchain/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9-lineage-19.1 $HOME/toolchain/gcc49
+            rm -f $HOME/toolchain/gcc49.tar.gz
+          fi
+          ls $HOME/toolchain/gcc49/bin/ | grep -E "gcc$|ld$|as$|objcopy$|strip$"
+          $HOME/toolchain/gcc49/bin/aarch64-linux-android-gcc --version | head -2
+      - name: Configure kernel [${{ matrix.variant }}]
         run: |
           cd kernel
-          export PATH=/opt/toolchain/gcc49/bin:$PATH
+          export PATH=$HOME/toolchain/gcc49/bin:$PATH
           make O=out ARCH=arm64 CC=aarch64-linux-android-gcc \
             CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             lineageos_h930_defconfig
-      - name: Build kernel
+      - name: Build kernel [${{ matrix.variant }}]
         run: |
           cd kernel
-          export PATH=/opt/toolchain/gcc49/bin:$PATH
+          export PATH=$HOME/toolchain/gcc49/bin:$PATH
           make O=out ARCH=arm64 CC=aarch64-linux-android-gcc \
             CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             -j$(nproc) Image.gz-dtb \
@@ -143,12 +244,12 @@ jobs:
             exit 1
           fi
           echo "=== KERNEL BUILT OK ==="
-      - name: Download boot17.img
+      - name: Download boot17.img [${{ matrix.variant }}]
         run: |
           curl -fL -o boot.img \
             "https://raw.githubusercontent.com/yueddff/android_kernel_lge_msm8998/lineage-22.2/boot17.img" \
             || { echo "boot17.img not found"; exit 1; }
-      - name: Repack boot image
+      - name: Repack boot image [${{ matrix.variant }}]
         run: |
           cd "$GITHUB_WORKSPACE"
           python3 <<'PY'
@@ -175,11 +276,10 @@ jobs:
               f.write(bytes(h) + out[ps:])
           print('kernel bytes:', new_ks, 'ramdisk:', rs, 'pagesize:', ps)
           PY
-      - name: Verify and upload
+      - name: Verify [${{ matrix.variant }}]
         run: |
           ls -l new-boot.img
           python3 -c "import struct; d=open('new-boot.img','rb').read(); print('magic:', d[:8], 'kernel:', struct.unpack_from('<I', d, 8)[0])"
-          # 验证内核编译器版本（必须显示 gcc 4.9.x）
           python3 <<'PY'
           import struct, zlib, re
           d = open('new-boot.img','rb').read()
@@ -193,8 +293,8 @@ jobs:
               raise SystemExit(1)
           print('OK: 编译器为 GCC 4.9，与官方 boot17.img 同工具链')
           PY
-      - name: Upload boot (NO-VIDC-FIX control)
+      - name: Upload boot [${{ matrix.variant }}]
         uses: actions/upload-artifact@v4
         with:
-          name: boot17-novidc
+          name: boot17-${{ matrix.variant }}
           path: new-boot.img
