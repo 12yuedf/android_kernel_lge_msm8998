@@ -1,18 +1,29 @@
 name: Build LG V30 (joan) kernel - 4K fix
 
 # ============================================================
-# v3.4锛欳lang 鏋勫缓 + 姝ｇ‘鐨?4K 淇锛坒bdev MDSS 璺緞锛? 鑷寘鍚?boot.img 閲嶆墦鍖?# 璇存槑锛?#   - 鏋勫缓鏂瑰紡娌跨敤宸查獙璇佸彲鐢ㄧ殑鏂规锛圕lang + lineageos_joan_defconfig + O=out锛?#   - 4K 淇鎵撳湪鐪熷疄鐢熸晥鐨勮矾寰勪笂锛歞rivers/video/fbdev/msm/mdss_hdmi_edid.c
-#     锛坖oan 鐨?HDMI/DP 杈撳嚭璧?fbdev MDSS 鏍堬紝lineageos_joan_defconfig 鏃?DRM_MSM锛?#   - 鍐呮牳婧愮爜 + 缂栬瘧浜х墿浼氱紦瀛橈紝绗簩娆¤捣璺宠繃 clone/patch/defconfig锛?#     鍙閲忕紪璇戞敼鍔ㄨ繃鐨勬枃浠讹紙绾?5~10 鍒嗛挓锛?#   - v3.4 淇锛欰OSP 鏂扮増 unpack_bootimg.py 涓嶅啀杈撳嚭 boot_info.json 瀵艰嚧鎵撳寘澶辫触銆?#     鐜板湪鏀逛负鍐呭祵 Python 鐩存帴瑙ｆ瀽鍘?boot.img 澶撮儴 -> 鎹㈠唴鏍?-> 閲嶆墦鍖咃紝
-#     header 閲屾墍鏈夊瓧娈碉紙cmdline / os_version / 鍚勫湴鍧€ / page_size锛夊師鏍蜂繚鐣欙紝
-#     涓嶄緷璧栦换浣曞閮ㄥ伐鍏凤紝涔熶笉闇€瑕佷粠 googlesource 涓嬭浇 mkbootimg銆?# 浣跨敤鍓嶆彁锛?#   - 琛ヤ竵鏂囦欢宸蹭笂浼犲埌鏈粨搴?lineage-22.2 鍒嗘敮鏍圭洰褰曪細
+# v3.4：Clang 构建 + 正确的 4K 修复（fbdev MDSS 路径）+ 自包含 boot.img 重打包
+# 说明：
+#   - 构建方式沿用已验证可用的方案（Clang + lineageos_joan_defconfig + O=out）
+#   - 4K 修复打在真实生效的路径上：drivers/video/fbdev/msm/mdss_hdmi_edid.c
+#     （joan 的 HDMI/DP 输出走 fbdev MDSS 栈，lineageos_joan_defconfig 无 DRM_MSM）
+#   - 内核源码 + 编译产物会缓存，第二次起跳过 clone/patch/defconfig，
+#     只增量编译改动过的文件（约 5~10 分钟）
+#   - v3.4 修复：AOSP 新版 unpack_bootimg.py 不再输出 boot_info.json 导致打包失败。
+#     现在改为内嵌 Python 直接解析原 boot.img 头部 -> 换内核 -> 重打包，
+#     header 里所有字段（cmdline / os_version / 各地址 / page_size）原样保留，
+#     不依赖任何外部工具，也不需要从 googlesource 下载 mkbootimg。
+# 使用前提：
+#   - 补丁文件已上传到本仓库 lineage-22.2 分支根目录：
 #     0001-sde-hdmi-edid-drop-DCI-4K-force-UHD-3840x2160.patch
-#   - boot.img 宸蹭笂浼犲埌鏈粨搴?lineage-22.2 鍒嗘敮鏍圭洰褰曪紙閲嶆墦鍖呯敤锛?#   - 浠撳簱椤?Actions -> 鏈伐浣滄祦 -> Run workflow锛坆oot_img_url 鐣欑┖锛?# ============================================================
+#   - boot.img 已上传到本仓库 lineage-22.2 分支根目录（重打包用）
+#   - 仓库页 Actions -> 本工作流 -> Run workflow（boot_img_url 留空）
+# ============================================================
 
 on:
   workflow_dispatch:
     inputs:
       boot_img_url:
-        description: '锛堝鐢級澶栭儴 boot.img 鐩撮摼銆備粨搴撴牴鐩綍宸叉湁 boot.img 鏃朵紭鍏堢敤浠撳簱鏂囦欢锛屾棤闇€濉椤广€?
+        description: '（备用）外部 boot.img 直链。仓库根目录已有 boot.img 时优先用仓库文件，无需填此项。'
         required: false
         default: ''
 
@@ -35,7 +46,7 @@ jobs:
       - name: Clone LineageOS kernel source (only when no cache)
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
-          # 鑷垜淇濇姢锛氳嫢 kernel 鐩綍宸插瓨鍦紙渚嬪缂撳瓨鎭㈠锛夊垯璺宠繃 clone
+          # 自我保护：若 kernel 目录已存在（例如缓存恢复）则跳过 clone
           if [ -f kernel/Makefile ] && [ -d kernel/.git ]; then
             echo "==> kernel source already present, skipping clone"
           else
@@ -47,7 +58,8 @@ jobs:
         run: |
           set -e
           cd kernel
-          # 浼樺厛鐢?yueddff锛屽け璐ュ垯鍥為€€ 12yuedf锛堜袱涓敤鎴峰悕閮借瘯锛屾€绘湁涓€涓兘涓嬪埌锛?          curl -fsSL -o /tmp/fix.patch \
+          # 优先用 yueddff，失败则回退 12yuedf（两个用户名都试，总有一个能下到）
+          curl -fsSL -o /tmp/fix.patch \
             "https://raw.githubusercontent.com/yueddff/android_kernel_lge_msm8998/lineage-22.2/0001-sde-hdmi-edid-drop-DCI-4K-force-UHD-3840x2160.patch" \
             || curl -fsSL -o /tmp/fix.patch \
             "https://raw.githubusercontent.com/12yuedf/android_kernel_lge_msm8998/lineage-22.2/0001-sde-hdmi-edid-drop-DCI-4K-force-UHD-3840x2160.patch"
@@ -62,25 +74,6 @@ jobs:
           fi
           git diff --stat
 
-      - name: Apply idle-power-collapse patch (fix ~8fps video stutter)
-        run: |
-          set -e
-          cd kernel
-          python3 - <<'PYEOF'
-          import io
-          p = 'drivers/video/fbdev/msm/mdss_mdp.c'
-          s = io.open(p, encoding='utf-8', errors='surrogateescape').read()
-          old = '\tmdata->idle_pc_enabled = of_property_read_bool(pdev->dev.of_node,\n\t\t "qcom,mdss-idle-power-collapse-enabled");'
-          new = '\t/* DSH PATCH: keep MDP powered, avoid cmd-panel idle collapse (TE -> ~8Hz) */\n\tmdata->idle_pc_enabled = false;'
-          if old in s:
-              io.open(p, 'w', encoding='utf-8', errors='surrogateescape').write(s.replace(old, new, 1))
-              print('==> idle_pc patched')
-          elif 'mdata->idle_pc_enabled = false;' in s:
-              print('==> idle_pc already patched')
-          else:
-              raise SystemExit('ERROR: idle_pc pattern not found')
-          PYEOF
-          grep -n "idle_pc_enabled" drivers/video/fbdev/msm/mdss_mdp.c | head
       - name: Install dependencies (incl. clang toolchain)
         run: |
           sudo apt-get update
@@ -103,12 +96,14 @@ jobs:
           export CC=clang
           export REAL_CC=clang
 
-          # 鍏抽棴灞€閮ㄧ殑 -Werror / -Werror=xxx锛堝 tfa9872 鐨?ccflags-y += -Werror锛?          # Clang 浼氭妸"璇鎬х缉杩?绛夎鍛婂崌绾т负閿欒瀵艰嚧缂栬瘧澶辫触锛涘箓绛夛紝缂撳瓨涓嬮噸澶嶆墽琛屾棤瀹筹級
+          # 关闭局部的 -Werror / -Werror=xxx（如 tfa9872 的 ccflags-y += -Werror，
+          # Clang 会把"误导性缩进"等警告升级为错误导致编译失败；幂等，缓存下重复执行无害）
           sed -i 's/KBUILD_CFLAGS\t+= -Werror/KBUILD_CFLAGS += -Wno-error/' Makefile
           find . -name Makefile -not -path './.git/*' -exec sed -i \
             's/ccflags-y\s*+=\s*-Werror$/ccflags-y += -Wno-error/; s/ -Werror=/ -Wno-error=/g' {} +
 
-          # 鏈夌紦瀛橈紙out/.config 宸插瓨鍦級鍒欒烦杩?defconfig锛岀洿鎺ュ閲忕紪璇?          if [ ! -f out/.config ]; then
+          # 有缓存（out/.config 已存在）则跳过 defconfig，直接增量编译
+          if [ ! -f out/.config ]; then
             echo "==> Using defconfig: lineageos_joan_defconfig"
             make O=out lineageos_joan_defconfig
           else
@@ -128,7 +123,7 @@ jobs:
         run: |
           set -e
           cd kernel
-          # 浼樺厛鐢ㄤ粨搴撴牴鐩綍鐨?boot.img锛堜笂浼犲埌鏈粨搴撻粯璁ゅ垎鏀嵆鍙級锛屽惁鍒欑敤杈撳叆鐨勫鐢?URL
+          # 优先用仓库根目录的 boot.img（上传到本仓库默认分支即可），否则用输入的备用 URL
           if [ -f ../boot.img ]; then
             echo "==> Using boot.img from this repo"
             cp ../boot.img /tmp/stock-boot.img
@@ -153,10 +148,11 @@ jobs:
               return struct.unpack_from('<I', data, o)[0]
 
           page_size = u32(36)
-          header_version = u32(52)          # v1+ 鏃惰瀛楁鏄?1/2/3/4锛泇0 閲岃鍋忕Щ鏄?cmdline 鍐呭锛圓SCII锛夛紝涓嶄細鏄?1~4
+          header_version = u32(52)          # v1+ 时该字段是 1/2/3/4；v0 里该偏移是 cmdline 内容（ASCII），不会是 1~4
           if header_version in (1, 2, 3, 4):
               sys.exit('ERROR: header_version %d not supported (LG V30 boot.img is v0)' % header_version)
-          header_size = 1616                # v0锛氭棤 header_size/header_version 瀛楁锛宑mdline 浠?48 寮€濮?          id_off = 560                      # cmdline(48..559) -> id(560..591) -> extra_cmdline(592..1615)
+          header_size = 1616                # v0：无 header_size/header_version 字段，cmdline 从 48 开始
+          id_off = 560                      # cmdline(48..559) -> id(560..591) -> extra_cmdline(592..1615)
 
           kernel_size = u32(8)
           ramdisk_size = u32(16)
@@ -165,7 +161,7 @@ jobs:
           def pad(n):
               return ((n + page_size - 1) // page_size) * page_size
 
-          pos = page_size                   # 绗竴椤垫斁 header
+          pos = page_size                   # 第一页放 header
           kernel = data[pos:pos + kernel_size]; pos += pad(kernel_size)
           ramdisk = data[pos:pos + ramdisk_size]; pos += pad(ramdisk_size)
           second = data[pos:pos + second_size] if second_size else b''
@@ -174,9 +170,9 @@ jobs:
 
           new_kernel = open(kernel_src, 'rb').read()
           out = bytearray(page_size)
-          out[:header_size] = data[:header_size]            # 鍘熸牱淇濈暀 header 鍏ㄩ儴瀛楁锛坈mdline/os_version/鍦板潃绛夛級
-          struct.pack_into('<I', out, 8, len(new_kernel))   # 浠呮洿鏂?kernel_size
-          out[id_off:id_off + 32] = b'\x00' * 32            # 娓呯┖ id锛坆ootloader 涓嶆牎楠岋級
+          out[:header_size] = data[:header_size]            # 原样保留 header 全部字段（cmdline/os_version/地址等）
+          struct.pack_into('<I', out, 8, len(new_kernel))   # 仅更新 kernel_size
+          out[id_off:id_off + 32] = b'\x00' * 32            # 清空 id（bootloader 不校验）
 
           out += new_kernel
           out += b'\x00' * (pad(len(new_kernel)) - len(new_kernel))
@@ -209,9 +205,9 @@ jobs:
 
       - name: Build summary
         run: |
-          echo "## 鏋勫缓瀹屾垚" >> "$GITHUB_STEP_SUMMARY"
-          echo "- 鍐呮牳(鍚獶TB): \`Image.gz-dtb\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "## 构建完成" >> "$GITHUB_STEP_SUMMARY"
+          echo "- 内核(含DTB): \`Image.gz-dtb\`" >> "$GITHUB_STEP_SUMMARY"
           if ls ${{ github.workspace }}/kernel/out/final/boot.img 2>/dev/null; then
-            echo "- 鍙埛鍐欓暅鍍? \`boot.img\`" >> "$GITHUB_STEP_SUMMARY"
-            echo "  鍒峰叆: \`fastboot flash boot boot.img\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "- 可刷写镜像: \`boot.img\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "  刷入: \`fastboot flash boot boot.img\`" >> "$GITHUB_STEP_SUMMARY"
           fi
