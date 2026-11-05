@@ -74,6 +74,12 @@ jobs:
           fi
           git diff --stat
 
+      - name: Apply idle-power-collapse patch
+        run: |
+          cd kernel
+          python3 ../dsh_patch.py
+          grep -n idle_pc_enabled drivers/video/fbdev/msm/mdss_mdp.c | head
+
       - name: Install dependencies (incl. clang toolchain)
         run: |
           sudo apt-get update
