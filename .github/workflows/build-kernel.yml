@@ -80,12 +80,12 @@ jobs:
           python3 ../dsh_patch.py
           grep -n idle_pc_enabled drivers/video/fbdev/msm/mdss_mdp.c | head
 
-      - name: Apply 2K60 HDMI patch
+      - name: Apply no-panic patch
         run: |
           cd kernel
-          python3 ../dsh_patch_2k.py
+          python3 ../dsh_patch_nopanic.py
           echo '--- verify ---'
-          grep -n '2560x1440p60' include/uapi/video/msm_hdmi_modes.h | head -3
+          grep -n 'skipping SoC reset' drivers/soc/qcom/subsystem_restart.c | head -3
       - name: Install dependencies (incl. clang toolchain)
         run: |
           sudo apt-get update
