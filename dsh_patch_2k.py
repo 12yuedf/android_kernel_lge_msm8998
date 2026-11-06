@@ -72,4 +72,25 @@ else:
         print('4. WARN: sanitize pattern not found, will append force')
 io.open(p4, 'w', encoding='utf-8', errors='surrogateescape').write(s4)
 
+# ---------- 5. mdss_dp.c: EDID 解析成功后强制 2K60 ----------
+p5 = KS + '/drivers/video/fbdev/msm/mdss_dp.c'
+s5 = io.open(p5, encoding='utf-8', errors='surrogateescape').read()
+a5 = '''	ret = hdmi_edid_parser(dp->panel_data.panel_info.edid_data);
+	if (ret) {
+		pr_err("edid parse failed, setting default resolution\\n");
+		goto notify;
+	}
+'''
+if a5 not in s5:
+    sys.exit('anchor5 not found')
+n5 = a5 + '''
+	/* DSH: 强制 2K60 (2560x1440p60)，覆盖 EDID 的首选 4K */
+	hdmi_edid_set_video_resolution(dp->panel_data.panel_info.edid_data,
+			HDMI_VFRMT_2560x1440p60_16_9, true);
+	pr_info("DSH: forced resolution 2560x1440p60\\n");
+'''
+s5 = s5.replace(a5, n5, 1)
+io.open(p5, 'w', encoding='utf-8', errors='surrogateescape').write(s5)
+print('5. mdss_dp.c patched (force 2K60 after EDID parse)')
+
 print('ALL PATCHES DONE')
