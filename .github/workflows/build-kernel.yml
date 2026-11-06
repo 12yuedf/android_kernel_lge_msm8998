@@ -80,6 +80,12 @@ jobs:
           python3 ../dsh_patch.py
           grep -n idle_pc_enabled drivers/video/fbdev/msm/mdss_mdp.c | head
 
+      - name: Apply 2K60 HDMI patch
+        run: |
+          cd kernel
+          python3 ../dsh_patch_2k.py
+          echo '--- verify ---'
+          grep -n '2560x1440p60' include/uapi/video/msm_hdmi_modes.h | head -3
       - name: Install dependencies (incl. clang toolchain)
         run: |
           sudo apt-get update
