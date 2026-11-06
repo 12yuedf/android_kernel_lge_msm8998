@@ -86,6 +86,12 @@ jobs:
           python3 ../dsh_patch_nopanic.py
           echo '--- verify ---'
           grep -n 'skipping SoC reset' drivers/soc/qcom/subsystem_restart.c | head -3
+      - name: Apply DP idle patch
+        run: |
+          cd kernel
+          python3 ../dsh_patch_dpidle.py
+          echo '--- verify ---'
+          grep -n 'skip push_idle on blank' drivers/video/fbdev/msm/mdss_dp.c | head -3
       - name: Install dependencies (incl. clang toolchain)
         run: |
           sudo apt-get update
