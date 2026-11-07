@@ -92,6 +92,12 @@ jobs:
           python3 ../dsh_patch_dpidle.py
           echo '--- verify ---'
           grep -n 'skip push_idle on blank' drivers/video/fbdev/msm/mdss_dp.c | head -3
+      - name: Apply WLAN recovering fix
+        run: |
+          cd kernel
+          python3 ../dsh_patch_wlan.py
+          echo '--- verify ---'
+          grep -n 'clearing stuck recovering state' drivers/staging/qcacld-3.0/core/hdd/src/wlan_hdd_main.c | head -3
       - name: Install dependencies (incl. clang toolchain)
         run: |
           sudo apt-get update
