@@ -98,6 +98,12 @@ jobs:
           python3 ../dsh_patch_wlan.py
           echo '--- verify ---'
           grep -n 'clearing stuck recovering state' drivers/staging/qcacld-3.0/core/hdd/src/wlan_hdd_main.c | head -3
+      - name: Apply PLD assert recovery fix
+        run: |
+          cd kernel
+          python3 ../dsh_patch_pld.py
+          echo '--- verify ---'
+          grep -n 'scheduling recovery anyway' drivers/staging/qcacld-3.0/core/cds/src/cds_api.c | head -3
       - name: Install dependencies (incl. clang toolchain)
         run: |
           sudo apt-get update
